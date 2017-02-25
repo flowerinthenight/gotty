@@ -1,13 +1,13 @@
 OUTPUT_DIR = ./builds
 
-gotty: app/resource.go main.go app/*.go
+gotty: server/asset.go main.go server/*.go webtty/*/*.go
 	godep go build
 
-resource:  app/resource.go
+asset:  server/asset.go
 
-app/resource.go: bindata/static/js/hterm.js bindata/static/js/gotty.js  bindata/static/index.html bindata/static/favicon.png
-	go-bindata -prefix bindata -pkg app -ignore=\\.gitkeep -o app/resource.go bindata/...
-	gofmt -w app/resource.go
+server/asset.go: bindata/static/js/hterm.js bindata/static/js/gotty.js  bindata/static/index.html bindata/static/favicon.png
+	go-bindata -prefix bindata -pkg server -ignore=\\.gitkeep -o server/asset.go bindata/...
+	gofmt -w server/asset.go
 
 bindata:
 	mkdir bindata

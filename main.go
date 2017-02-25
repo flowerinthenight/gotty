@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -8,24 +9,25 @@ import (
 
 	"github.com/codegangsta/cli"
 
-	"github.com/yudai/gotty/app"
-	"github.com/yudai/gotty/backends/ptycommand"
+	"github.com/yudai/gotty/backend/localcommand"
+	"github.com/yudai/gotty/pkg/homedir"
+	"github.com/yudai/gotty/server"
 	"github.com/yudai/gotty/utils"
 )
 
 func main() {
-	cmd := cli.NewApp()
-	cmd.Name = "gotty"
-	cmd.Version = app.Version
-	cmd.Usage = "Share your terminal as a web application"
-	cmd.HideHelp = true
+	app := cli.NewApp()
+	app.Name = "gotty"
+	app.Version = Version
+	app.Usage = "Share your terminal as a web application"
+	app.HideHelp = true
 	cli.AppHelpTemplate = helpTemplate
 
-	appOptions := &app.Options{}
+	appOptions := &server.Options{}
 	if err := utils.ApplyDefaultValues(appOptions); err != nil {
 		exit(err, 1)
 	}
-	backendOptions := &ptycommand.Options{}
+	backendOptions := &localcommand.Options{}
 	if err := utils.ApplyDefaultValues(backendOptions); err != nil {
 		exit(err, 1)
 	}
@@ -35,7 +37,7 @@ func main() {
 		exit(err, 3)
 	}
 
-	cmd.Flags = append(
+	app.Flags = append(
 		cliFlags,
 		cli.StringFlag{
 			Name:   "config",
@@ -45,7 +47,7 @@ func main() {
 		},
 	)
 
-	cmd.Action = func(c *cli.Context) {
+	app.Action = func(c *cli.Context) {
 		if len(c.Args()) == 0 {
 			msg := "Error: No command given."
 			cli.ShowAppHelp(c)
@@ -53,7 +55,7 @@ func main() {
 		}
 
 		configFile := c.String("config")
-		_, err := os.Stat(utils.ExpandHomeDir(configFile))
+		_, err := os.Stat(homedir.Expand(configFile))
 		if configFile != "~/.gotty" || !os.IsNotExist(err) {
 			if err := utils.ApplyConfigFile(configFile, appOptions, backendOptions); err != nil {
 				exit(err, 2)
@@ -65,27 +67,33 @@ func main() {
 		appOptions.EnableBasicAuth = c.IsSet("credential")
 		appOptions.EnableTLSClientAuth = c.IsSet("tls-ca-crt")
 
-		if err := app.CheckConfig(appOptions); err != nil {
+		err = appOptions.Validate()
+		if err != nil {
 			exit(err, 6)
 		}
 
-		manager, err := ptycommand.NewCommandClientContextManager(c.Args(), backendOptions)
+		factory, err := localcommand.NewFactory(c.Args(), backendOptions)
 		if err != nil {
 			exit(err, 3)
 		}
-		app, err := app.New(manager, appOptions)
+		srv, err := server.New(factory, appOptions)
 		if err != nil {
 			exit(err, 3)
 		}
 
-		registerSignals(app)
+		ctx, cancel := context.WithCancel(context.Background())
+		gCtx, gCancel := context.WithCancel(context.Background())
 
-		err = app.Run()
-		if err != nil {
-			exit(err, 4)
-		}
+		errs := make(chan error, 1)
+		go func() {
+			errs <- srv.Run(ctx, server.WithGracefullContext(gCtx))
+		}()
+		waitSignals(errs, cancel, gCancel)
+
+		fmt.Println("exiting ")
+
 	}
-	cmd.Run(os.Args)
+	app.Run(os.Args)
 }
 
 func exit(err error, code int) {
@@ -95,7 +103,7 @@ func exit(err error, code int) {
 	os.Exit(code)
 }
 
-func registerSignals(app *app.App) {
+func waitSignals(errs chan error, cancel context.CancelFunc, gracefullCancel context.CancelFunc) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(
 		sigChan,
@@ -103,17 +111,33 @@ func registerSignals(app *app.App) {
 		syscall.SIGTERM,
 	)
 
-	go func() {
-		for {
-			s := <-sigChan
-			switch s {
-			case syscall.SIGINT, syscall.SIGTERM:
-				if app.Exit() {
-					fmt.Println("Send ^C to force exit.")
-				} else {
-					os.Exit(5)
+	select {
+	case <-errs:
+		return
+
+	case s := <-sigChan:
+		switch s {
+		case syscall.SIGINT:
+			gracefullCancel()
+			fmt.Println("C-C to force close")
+			select {
+			case <-errs:
+				return
+			case <-sigChan:
+				cancel()
+				select {
+				//				case time.After(time.Second):
+				case <-errs:
 				}
+				return
 			}
+		default:
+			cancel()
+			select {
+			//			case time.After(time.Second):
+			case <-errs:
+			}
+			return
 		}
-	}()
+	}
 }
