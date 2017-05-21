@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+      "strictNullChecks": true,
+      "noUnusedLocals" : true,
+      "noImplicitThis": true,
+      "alwaysStrict": true,
+      "outDir": "./dist/",
+      "declaration": true,
+      "sourceMap": true,
+/*      "noImplicitAny": true,*/
+      "target": "es5",
+      "module": "commonJS"
+  }
+}
